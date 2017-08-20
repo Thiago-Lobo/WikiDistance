@@ -2,6 +2,7 @@ import requests
 import json
 from pprint import pprint
 from py2neo import Graph, Relationship, authenticate, Node
+from datetime import datetime as dt
 
 base_url = 'https://pt.wikipedia.org/w/api.php'
 query_url = base_url + '?action=query&format=json'
@@ -18,8 +19,6 @@ crawler_start_url = 'https://pt.wikipedia.org/wiki/Brasil'
 
 api_request_counter = 0
 
-current_generation = 1
-
 def initialize_neo4j():
 	global graph
 
@@ -29,14 +28,19 @@ def initialize_neo4j():
 	graph.run("CREATE CONSTRAINT ON (a:Article) ASSERT a.page_id IS UNIQUE")
 	graph.run("CREATE CONSTRAINT ON (a:Article) ASSERT a.title IS UNIQUE")
 
+def current_time_string():
+	return dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
 def parse_title_from_url(url):
 	search_tag = '/wiki/'
 	return url[(url.index(search_tag) + len(search_tag)):]
 
-def query_child_articles_by_title(title, paging = '', get_metadata = True):
+def query_article_data_by_title(title, paging = '', get_metadata = True):
 	global api_request_counter
 
 	endpoint_url = children_url + '&titles=' + title + (('&plcontinue=' + paging) if len(paging) != 0 else '')
+	print u"[{}] Getting from URL: {}".format(current_time_string(), endpoint_url).encode('utf-8')
+
 	json_response = requests.get(endpoint_url).json()
 
 	api_request_counter += 1
@@ -45,7 +49,7 @@ def query_child_articles_by_title(title, paging = '', get_metadata = True):
 	result = json_response["query"]["pages"][page_id]["links"]
 
 	if "continue" in json_response:
-		result += query_child_articles_by_title(title, json_response["continue"]["plcontinue"], False)
+		result += query_article_data_by_title(title, json_response["continue"]["plcontinue"], False)
 
 	if get_metadata:
 		result = {
@@ -59,7 +63,7 @@ def query_child_articles_by_title(title, paging = '', get_metadata = True):
 
 	return result
 
-def push_article(metadata, generation, visited):
+def push_article(metadata, visited):
 	node = Node("Article", title = metadata["title"])
 	graph.merge(node)
 
@@ -74,9 +78,6 @@ def push_article(metadata, generation, visited):
 		if "full_url" in metadata:
 			node["full_url"] = metadata["full_url"]
 
-		if not "generation" in node:
-			node["generation"] = generation
-
 		node["visited"] = visited
 
 		node.push()
@@ -86,28 +87,47 @@ def push_article(metadata, generation, visited):
 def relate_articles(parent, child):
 	graph.merge(Relationship(parent, "CONTAINS", child))
 
-def crawl_parent_and_children(title, parent_generation):
-	data = query_child_articles_by_title(title)
+def visit_article(title):
+	data = query_article_data_by_title(title)
 
-	parent_article = push_article(data["metadata"], parent_generation, True)
+	parent_article = push_article(data["metadata"], True)
 
-	print u">> Found {} child articles for article with title: '{}'".format(len(data["links"]), title)
+	print u"[{}] Found {} child articles for article with title: '{}'".format(current_time_string(), len(data["links"]), title).encode('utf-8')
 
 	for counter, article in enumerate(data["links"]):
-		print u">> Pushing child article {}/{} with title: '{}'".format(counter, len(data["links"]), article["title"])
+		print u"[{}] Pushing child article {}/{} with title: '{}'".format(current_time_string(), counter, len(data["links"]), article["title"]).encode('utf-8')
 
 		if article["title"] == data["metadata"]["title"]:
-			print u">> Skipping loop"
+			print u"[{}] Skipping loop".format(current_time_string()).encode('utf-8')
 			continue
 
 		metadata = {'title': article["title"]}
-		child_article = push_article(metadata, parent_generation + 1, False)
+		child_article = push_article(metadata, False)
 		relate_articles(parent_article, child_article)
 		
+def query_article_count():
+	result = graph.data("MATCH (n:Article) RETURN count(n)")
+
+	return result[0].items()[0][1] 
+
+def get_unvisited_article():
+	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 1")
+	
+	if len(result) == 0:
+		return "_____1noarticle"
+
+	return result[0]["a"]["title"]
+
 def start():
 	initialize_neo4j()
-	crawl_parent_and_children(parse_title_from_url(crawler_start_url), 0)
+	
+	if query_article_count() == 0:
+		visit_article(parse_title_from_url(crawler_start_url))
+
+	unvisited_title = get_unvisited_article()
+
+	while unvisited_title != "_____1noarticle":
+		visit_article(unvisited_title)
+		unvisited_title = get_unvisited_article()
 
 start()
-
-# n = graph.find_one("Article", 'title', 'Brasil')
