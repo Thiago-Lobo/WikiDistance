@@ -3,6 +3,7 @@ import json
 from pprint import pprint
 from py2neo import Graph, Relationship, authenticate, Node
 from datetime import datetime as dt
+import random
 
 base_url = 'https://pt.wikipedia.org/w/api.php'
 query_url = base_url + '?action=query&format=json'
@@ -10,12 +11,14 @@ backlinks_url = query_url + '&list=backlinks&blredirect=1&blnamespace=0&bllimit=
 properties_url = query_url + '&prop=info|links'
 children_url = query_url + '&prop=info|links&inprop=url&plnamespace=0&pllimit=max'
 
-db_host = '192.168.1.4'
+db_host = 'localhost'
 db_port = '7474'
 
 graph = None
+transaction = None
 
-crawler_start_url = 'https://pt.wikipedia.org/wiki/Brasil'
+# crawler_start_url = 'https://pt.wikipedia.org/wiki/Brasil'
+crawler_start_url = 'https://pt.wikipedia.org/wiki/Kobi_Lichtenstein'
 
 api_request_counter = 0
 
@@ -46,6 +49,10 @@ def query_article_data_by_title(title, paging = '', get_metadata = True):
 	api_request_counter += 1
 
 	page_id = json_response["query"]["pages"].items()[0][0]
+
+	if page_id == "-1":
+		return -1
+
 	result = json_response["query"]["pages"][page_id]["links"]
 
 	if "continue" in json_response:
@@ -63,7 +70,7 @@ def query_article_data_by_title(title, paging = '', get_metadata = True):
 
 	return result
 
-def push_article(metadata, visited):
+def push_article(metadata, visited, invalid = False):
 	node = Node("Article", title = metadata["title"])
 	graph.merge(node)
 
@@ -82,6 +89,12 @@ def push_article(metadata, visited):
 
 		node.push()
 
+	if invalid:
+		node["visited"] = visited
+		node["invalid"] = invalid
+
+		node.push		
+
 	return node
 
 def relate_articles(parent, child):
@@ -89,6 +102,10 @@ def relate_articles(parent, child):
 
 def visit_article(title):
 	data = query_article_data_by_title(title)
+
+	if data == -1:
+		push_article({'title': title}, True, True)
+		return
 
 	parent_article = push_article(data["metadata"], True)
 
@@ -111,14 +128,15 @@ def query_article_count():
 	return result[0].items()[0][1] 
 
 def get_unvisited_article():
-	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 1")
+	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 200")
 	
 	if len(result) == 0:
 		return "_____1noarticle"
 
-	return result[0]["a"]["title"]
+	return result[random.randint(0, len(result) - 1)]["a"]["title"]
 
 def start():
+	random.seed(dt.now())
 	initialize_neo4j()
 	
 	if query_article_count() == 0:
@@ -127,7 +145,15 @@ def start():
 	unvisited_title = get_unvisited_article()
 
 	while unvisited_title != "_____1noarticle":
-		visit_article(unvisited_title)
-		unvisited_title = get_unvisited_article()
+		try:
+			visit_article(unvisited_title)
+			unvisited_title = get_unvisited_article()
+		except Exception, e:
+			print str(e)
+			try:
+				unvisited_title = get_unvisited_article()
+			except:
+				pass
+			pass
 
 start()
