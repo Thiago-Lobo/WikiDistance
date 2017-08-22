@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import requests
 import json
 from pprint import pprint
@@ -14,14 +16,12 @@ properties_url = query_url + '&prop=info|links'
 children_url = query_url + '&prop=info|links&inprop=url&plnamespace=0&pllimit=max'
 
 db_host = 'localhost'
-# db_host = '192.168.1.4'
 db_port = '7474'
 
 graph = None
 transaction = None
 
-# crawler_start_url = 'https://pt.wikipedia.org/wiki/Brasil'
-crawler_start_url = 'https://pt.wikipedia.org/wiki/Kobi_Lichtenstein'
+crawler_start_url = 'https://pt.wikipedia.org/wiki/Brasil'
 
 api_request_counter = 0
 visits_counter = 0
@@ -42,20 +42,21 @@ def update_cache():
 
 	local_cache = [x["n"]["title"] for x in result]
 
-	print u"[{}] Local cache updated. Cache size: {}".format(current_time_string(), len(local_cache)).encode('utf-8')
+	print "[{}] Local cache updated. Cache size: {}".format(current_time_string(), len(local_cache))
 
 def current_time_string():
 	return dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")
 
+# TESTAR
 def parse_title_from_url(url):
 	search_tag = '/wiki/'
-	return url[(url.index(search_tag) + len(search_tag)):]
+	return u"{}".format(url[(url.index(search_tag) + len(search_tag)):]).encode('utf-8')
 
 def query_article_data_by_title(title, paging = '', get_metadata = True):
 	global api_request_counter
 
 	endpoint_url = children_url + '&titles=' + title + (('&plcontinue=' + paging) if len(paging) != 0 else '')
-	print u"[{}] Getting from URL: {}".format(current_time_string(), endpoint_url).encode('utf-8')
+	print "[{}] Getting from URL: {}".format(current_time_string(), endpoint_url)
 
 	json_response = requests.get(endpoint_url).json()
 
@@ -66,7 +67,10 @@ def query_article_data_by_title(title, paging = '', get_metadata = True):
 	if page_id == "-1":
 		return -1
 
-	result = json_response["query"]["pages"][page_id]["links"]
+	if "links" in json_response["query"]["pages"][page_id]:
+		result = json_response["query"]["pages"][page_id]["links"]
+	else:
+		result = []
 
 	if "continue" in json_response:
 		result += query_article_data_by_title(title, json_response["continue"]["plcontinue"], False)
@@ -83,13 +87,9 @@ def query_article_data_by_title(title, paging = '', get_metadata = True):
 
 	return result
 
-def push_article(metadata, visited, invalid = False):
+def push_article(metadata, visited = False):
 	node = Node("Article", title = metadata["title"])
 	graph.merge(node)
-
-	# print ">> Node:"
-	# for key, value in dict(node).items():
-	# 	print u"{}: {}".format(key, value)
 
 	if not node["visited"]:
 		if "page_id" in metadata:
@@ -102,19 +102,13 @@ def push_article(metadata, visited, invalid = False):
 
 		node.push()
 
-	if invalid:
-		node["visited"] = visited
-		node["invalid"] = invalid
-
-		node.push()	
-
 	return node
 
 def relate_articles(parent, child):
 	graph.merge(Relationship(parent, "CONTAINS", child))
 
 def delete_article(title):
-	graph.run(u"MATCH (a:Article) WHERE a.title='{}' DETACH DELETE a".format(title).encode('utf-8'))
+	graph.run("MATCH (a:Article) WHERE a.title=\"{}\" DETACH DELETE a".format(title))
 
 def visit_article(title):
 	global visits_counter
@@ -124,47 +118,42 @@ def visit_article(title):
 	visits_counter += 1
 
 	if title in local_cache:
-		# print u"[{}] Removing '{}' from local cache. Cache size: {}".format(current_time_string(), title, len(local_cache)).encode('utf-8')
 		local_cache.remove(title)
 
 	if data == -1:
 		delete_article(title)
 		return
 
-	parent_article = push_article(data["metadata"], True)
+	parent_article = push_article(data["metadata"])
 
-	print u"[{}] Found {} child articles for article with title: '{}'".format(current_time_string(), len(data["links"]), title).encode('utf-8')
+	print "[{}] Found {} child articles for article with title: '{}'".format(current_time_string(), len(data["links"]), title)
 
 	for counter, article in enumerate(data["links"]):
-		print u"[{}] Pushing child article {}/{} with title: '{}'".format(current_time_string(), counter, len(data["links"]), article["title"]).encode('utf-8')
-
 		if article["title"] in local_cache:
-			# print u"[{}] Skipping cached article".format(current_time_string()).encode('utf-8')
 			continue
 
 		if article["title"] == data["metadata"]["title"]:
-			print u"[{}] Skipping loop".format(current_time_string()).encode('utf-8')
 			continue
 
 		metadata = {'title': article["title"]}
-		# print u"[{}] Inserting '{}' into local cache. Cache size: {}".format(current_time_string(), article["title"], len(local_cache)).encode('utf-8')
 		local_cache.append(article["title"])
-		child_article = push_article(metadata, False)
+		child_article = push_article(metadata)
 		relate_articles(parent_article, child_article)
+
+	parent_article = push_article(data["metadata"], visited = True)
 		
 def query_article_count():
 	result = graph.data("MATCH (n:Article) RETURN count(n)")
 
 	return result[0].items()[0][1] 
 
-def get_unvisited_article():
-	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 200")
+def get_unvisited_article_title():
+	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 100")
 	
 	if len(result) == 0:
 		return "_____1noarticle"
 
-	# return result[random.randint(0, len(result) - 1)]["a"]["title"]
-	return result[0]["a"]["title"]
+	return u"{}".format(result[random.randint(0, len(result) - 1)]["a"]["title"]).encode("utf-8")
 
 def start():
 	global visits_counter
@@ -176,20 +165,16 @@ def start():
 	if query_article_count() == 0:
 		visit_article(parse_title_from_url(crawler_start_url))
 
-	unvisited_title = get_unvisited_article()
+	unvisited_title = get_unvisited_article_title()
 
 	while unvisited_title != "_____1noarticle":
 		try:
-			if visits_counter != 0 and visits_counter % 1000 == 0:
+			if visits_counter != 0 and visits_counter % 10000 == 0:
 				update_cache()
 			visit_article(unvisited_title)
-			unvisited_title = get_unvisited_article()
+			unvisited_title = get_unvisited_article_title()
 		except Exception, e:
-			print str(e)
-			try:
-				unvisited_title = get_unvisited_article()
-			except:
-				pass
+			print u"str(e)"
 			pass
 
 start()
