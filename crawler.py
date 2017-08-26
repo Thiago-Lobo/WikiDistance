@@ -6,6 +6,8 @@ from pprint import pprint
 from py2neo import Graph, Relationship, authenticate, Node
 from datetime import datetime as dt
 import random
+import urllib
+import traceback
 
 local_cache = []
 
@@ -32,7 +34,7 @@ def initialize_neo4j():
 	authenticate(db_host + ':' + db_port, "neo4j", "1234")
 	graph = Graph('http://{0}:{1}/db/data/'.format(db_host, db_port))
 
-	graph.run("CREATE CONSTRAINT ON (a:Article) ASSERT a.page_id IS UNIQUE")
+	#graph.run("CREATE CONSTRAINT ON (a:Article) ASSERT a.page_id IS UNIQUE")
 	graph.run("CREATE CONSTRAINT ON (a:Article) ASSERT a.title IS UNIQUE")
 
 def update_cache():
@@ -40,7 +42,7 @@ def update_cache():
 
 	result = graph.data("MATCH (n:Article) WHERE n.visited=false RETURN n")
 
-	local_cache = [x["n"]["title"] for x in result]
+	local_cache = [u"{}".format(x["n"]["title"]).encode('utf-8') for x in result]
 
 	print "[{}] Local cache updated. Cache size: {}".format(current_time_string(), len(local_cache))
 
@@ -55,7 +57,7 @@ def parse_title_from_url(url):
 def query_article_data_by_title(title, paging = '', get_metadata = True):
 	global api_request_counter
 
-	endpoint_url = children_url + '&titles=' + title + (('&plcontinue=' + paging) if len(paging) != 0 else '')
+	endpoint_url = children_url + '&titles=' + urllib.quote_plus(title) + (('&plcontinue=' + paging) if len(paging) != 0 else '')
 	print "[{}] Getting from URL: {}".format(current_time_string(), endpoint_url)
 
 	json_response = requests.get(endpoint_url).json()
@@ -73,7 +75,7 @@ def query_article_data_by_title(title, paging = '', get_metadata = True):
 		result = []
 
 	if "continue" in json_response:
-		result += query_article_data_by_title(title, json_response["continue"]["plcontinue"], False)
+		result += query_article_data_by_title(title, u"{}".format(json_response["continue"]["plcontinue"]).encode('utf-8'), False)
 
 	if get_metadata:
 		result = {
@@ -108,7 +110,7 @@ def relate_articles(parent, child):
 	graph.merge(Relationship(parent, "CONTAINS", child))
 
 def delete_article(title):
-	graph.run("MATCH (a:Article) WHERE a.title=\"{}\" DETACH DELETE a".format(title))
+	graph.run("MATCH (a:Article) WHERE a.title=\"{}\" DETACH DELETE a".format(title.replace('\\', '\\\\').replace('"', '\\"')))
 
 def visit_article(title):
 	global visits_counter
@@ -117,8 +119,8 @@ def visit_article(title):
 
 	visits_counter += 1
 
-	if title in local_cache:
-		local_cache.remove(title)
+	# if title in local_cache:
+	# 	local_cache.remove(title)
 
 	if data == -1:
 		delete_article(title)
@@ -129,14 +131,16 @@ def visit_article(title):
 	print "[{}] Found {} child articles for article with title: '{}'".format(current_time_string(), len(data["links"]), title)
 
 	for counter, article in enumerate(data["links"]):
-		if article["title"] in local_cache:
+		child_title = u"{}".format(article["title"]).encode('utf-8')
+
+		# if child_title in local_cache:
+		# 	continue
+
+		if child_title == data["metadata"]["title"]:
 			continue
 
-		if article["title"] == data["metadata"]["title"]:
-			continue
-
-		metadata = {'title': article["title"]}
-		local_cache.append(article["title"])
+		metadata = {'title': child_title}
+		# local_cache.append(child_title)
 		child_article = push_article(metadata)
 		relate_articles(parent_article, child_article)
 
@@ -148,33 +152,46 @@ def query_article_count():
 	return result[0].items()[0][1] 
 
 def get_unvisited_article_title():
-	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 100")
+	result = graph.data("MATCH (a:Article) WHERE a.visited = false return a limit 250")
 	
 	if len(result) == 0:
 		return "_____1noarticle"
 
+	# return u"Bootlegs & B-Sides".encode('utf-8')
 	return u"{}".format(result[random.randint(0, len(result) - 1)]["a"]["title"]).encode("utf-8")
+	# return u"{}".format(result[random.randint(0, len(result) - 1)]["a"]["title"]).encode("utf-8").replace('&', '%26')
+	# return u"Michael Wittig \"Kalel\"".encode('utf-8')
 
 def start():
 	global visits_counter
 
 	random.seed(dt.now())
 	initialize_neo4j()
-	update_cache()
+	# update_cache()
 
 	if query_article_count() == 0:
 		visit_article(parse_title_from_url(crawler_start_url))
 
 	unvisited_title = get_unvisited_article_title()
 
-	while unvisited_title != "_____1noarticle":
-		try:
-			if visits_counter != 0 and visits_counter % 10000 == 0:
-				update_cache()
-			visit_article(unvisited_title)
+	while True:
+		try:	
 			unvisited_title = get_unvisited_article_title()
-		except Exception, e:
-			print u"str(e)"
+			if unvisited_title == "_____1noarticle":
+				break;
+			visit_article(unvisited_title)			
+		except Exception as e:
+			print traceback.format_exc()
 			pass
+
+	# while unvisited_title != "_____1noarticle":
+	# 	try:	
+	# 		# if visits_counter != 0 and visits_counter % 10000 == 0:
+	# 			# update_cache()
+	# 		visit_article(unvisited_title)			
+	# 		unvisited_title = get_unvisited_article_title()
+	# 	except Exception as e:
+	# 		print traceback.format_exc()
+	# 		pass
 
 start()
